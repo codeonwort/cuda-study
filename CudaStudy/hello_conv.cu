@@ -9,6 +9,10 @@
 #include <assert.h>
 #include <vector>
 
+// Special case: Fixed data for 4x4 (see below)
+#define INPUT_DATA_WIDTH 326
+#define INPUT_DATA_HEIGHT 612
+
 dim3 calcNumBlocks(const dim3& dimensions, const dim3& blockSize) {
 	auto iceil = [](int x, int y) { return (x % y) ? x / y + 1 : x / y; };
 	int x = iceil(dimensions.x, blockSize.x);
@@ -41,9 +45,11 @@ struct Matrix {
 #define filterRadius 1
 __constant__ int F_device[2 * filterRadius + 1][2 * filterRadius + 1];
 
-// KERNEL: convlution filter
+// ------------------------------------------
+// Naive convolution filter
+
 template<typename T>
-__global__ void kernel_convFilter(
+__global__ void kernel_convFilter_naive(
 	T* src, int width, int height,
 	//T* filter, int filterRadius, // Now accessed by constant memory
 	T* dst)
@@ -66,7 +72,7 @@ __global__ void kernel_convFilter(
 
 				int fx = filterRadius + offsetX;
 				int fy = filterRadius + offsetY;
-				int fIx = fy * (filterRadius * 2 + 1) + fx;
+				//int fIx = fy * (filterRadius * 2 + 1) + fx;
 
 				//ret += src[neighborIx] * F[fIx];
 				ret += src[neighborIx] * F_device[fy][fx];
@@ -76,6 +82,52 @@ __global__ void kernel_convFilter(
 
 	if (outX < width && outY < height) {
 		dst[outIx] = ret;
+	}
+}
+
+// ------------------------------------------
+// Tiled convolution filter
+
+#define IN_TILE_DIM 16
+#define OUT_TILE_DIM ((IN_TILE_DIM) - 2 * (filterRadius))
+
+template<typename T>
+__global__ void kernel_convFilter_tiled(
+	T* src, int width, int height, T* dst)
+{
+	constexpr bool bIntMatrix = std::is_same<T, int>::value;
+	constexpr bool bFloatMatrix = std::is_same<T, float>::value;
+	static_assert(bIntMatrix || bFloatMatrix, "ElementType should be int or float");
+
+	int outX = blockIdx.x * OUT_TILE_DIM + threadIdx.x - filterRadius;
+	int outY = blockIdx.y * OUT_TILE_DIM + threadIdx.y - filterRadius;
+
+	bool bValidInput = (0 <= outY && outY < height && 0 <= outX && outX < width);
+
+	// Load input tile
+	__shared__ T N_s[IN_TILE_DIM][IN_TILE_DIM];
+	if (bValidInput) {
+		N_s[threadIdx.y][threadIdx.x] = src[outY * width + outX];
+	} else {
+		N_s[threadIdx.y][threadIdx.x] = 0;
+	}
+	__syncthreads();
+
+	// Calc output elements
+	int tileCol = threadIdx.x - filterRadius;
+	int tileRow = threadIdx.y - filterRadius;
+
+	bool bValidTile = (0 <= tileCol && tileCol < OUT_TILE_DIM
+		&& 0 <= tileRow && tileRow < OUT_TILE_DIM);
+
+	if (bValidInput && bValidTile) {
+		T ret = 0;
+		for (int fRow = 0; fRow < 2 * filterRadius + 1; ++fRow) {
+			for (int fCol = 0; fCol < 2 * filterRadius + 1; ++fCol) {
+				ret += F_device[fRow][fCol] * N_s[tileRow + fRow][tileCol + fCol];
+			}
+		}
+		dst[outY * width + outX] = ret;
 	}
 }
 
@@ -110,9 +162,10 @@ int runTest_convFilter(int argc, char* argv[])
 	constexpr bool bFloatMatrix = std::is_same<ElementType, float>::value;
 	static_assert(bIntMatrix || bFloatMatrix, "ElementType should be int or float");
 
-	Matrix<ElementType> M1(4, 4); // input
+	Matrix<ElementType> M1(INPUT_DATA_HEIGHT, INPUT_DATA_WIDTH); // input
 	Matrix<ElementType> F(radius * 2 + 1, radius * 2 + 1); // filter
-	Matrix<ElementType> M2(M1.rows, M1.cols); // output
+	Matrix<ElementType> M2_naive(M1.rows, M1.cols); // output
+	Matrix<ElementType> M2_tiled(M1.rows, M1.cols); // output
 
 	// Prepare random matrices
 	{
@@ -141,7 +194,7 @@ int runTest_convFilter(int argc, char* argv[])
 		}
 	}
 
-#if 1
+#if INPUT_DATA_WIDTH == 4 && INPUT_DATA_HEIGHT == 4
 	int m1[] = {
 		5, 1, 6, 4,
 		4, 4, 4, 4,
@@ -155,31 +208,36 @@ int runTest_convFilter(int argc, char* argv[])
 	};
 	memcpy(M1.m.data(), m1, sizeof(int) * 16);
 	memcpy(F.m.data(), f, sizeof(int) * 9);
+	// M2.m should be [-14 -34 -22 -16 -7 -19 -24 -10 -5 -12 -19 -5 0 -12 -12 4]
 #endif
 
 	printf("Matrices (row x col)\n");
 	printf("\tM1: %d x %d\n", M1.rows, M1.cols);
 	printf("\tF: %d x %d\n", F.rows, F.cols);
 
-	puts("Run kernel: convolution filter");
+	// Prepare filter
 	{
-		ElementType* M1_device;
 		//ElementType* F_device;
-		ElementType* M2_device;
-		cudaMalloc(&M1_device, M1.sizeInBytes());
 		//cudaMalloc(&F_device, F.sizeInBytes());
-		cudaMalloc(&M2_device, M1.sizeInBytes());
-		cudaStatus = cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
-		assert(cudaStatus == cudaError::cudaSuccess);
 		//cudaMemcpy(F_device, F.m.data(), F.sizeInBytes(), cudaMemcpyHostToDevice);
 		cudaStatus = cudaMemcpyToSymbol(F_device, F.m.data(), F.sizeInBytes());
 		assert(cudaStatus == cudaError::cudaSuccess);
-		cudaStatus = cudaMemcpy(M2_device, M2.m.data(), M2.sizeInBytes(), cudaMemcpyHostToDevice);
+	}
+
+	puts("Run kernel: naive convolution filter");
+	{
+		Matrix<ElementType>& M2 = M2_naive;
+
+		ElementType* M1_device;
+		ElementType* M2_device;
+		cudaMalloc(&M1_device, M1.sizeInBytes());
+		cudaMalloc(&M2_device, M1.sizeInBytes());
+		cudaStatus = cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
 		assert(cudaStatus == cudaError::cudaSuccess);
 
 		const dim3 blockSize(16, 16, 1);
 		const dim3 numBlocks = calcNumBlocks(M1.getDim3(), blockSize);
-		kernel_convFilter<<<numBlocks, blockSize>>>(
+		kernel_convFilter_naive<<<numBlocks, blockSize>>>(
 			M1_device, M1.cols, M1.rows,
 			//F_device, radius,
 			M2_device);
@@ -188,14 +246,63 @@ int runTest_convFilter(int argc, char* argv[])
 		assert(cudaStatus == cudaError::cudaSuccess);
 
 		cudaFree(M1_device);
-		//cudaFree(F_device);
 		cudaFree(M2_device);
 	}
 
-	puts("Verify");
+	puts("Run kernel: tiled convolution filter");
 	{
-		//
+		Matrix<ElementType>& M2 = M2_tiled;
+
+		ElementType* M1_device;
+		ElementType* M2_device;
+		cudaMalloc(&M1_device, M1.sizeInBytes());
+		cudaMalloc(&M2_device, M1.sizeInBytes());
+		cudaStatus = cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
+		assert(cudaStatus == cudaError::cudaSuccess);
+
+		// CAUTION: Compute num blocks with outBlockSize,
+		//          but actual block size is inBlockSize.
+		const dim3 inBlockSize(IN_TILE_DIM, IN_TILE_DIM, 1);
+		const dim3 outBlockSize(OUT_TILE_DIM, OUT_TILE_DIM, 1);
+		dim3 inputDim = M1.getDim3();
+		inputDim.x += filterRadius * 2;
+		inputDim.y += filterRadius * 2;
+		const dim3 numBlocks = calcNumBlocks(inputDim, outBlockSize);
+		kernel_convFilter_tiled<<<numBlocks, inBlockSize>>>(
+			M1_device, M1.cols, M1.rows,
+			M2_device);
+
+		cudaStatus = cudaMemcpy(M2.m.data(), M2_device, M2.sizeInBytes(), cudaMemcpyDeviceToHost);
+		assert(cudaStatus == cudaError::cudaSuccess);
+
+		cudaFree(M1_device);
+		cudaFree(M2_device);
 	}
+
+	cudaFree(F_device);
+
+	puts("Compare results...");
+	{
+		for (size_t i = 0; i < M2_naive.m.size(); ++i) {
+			if (M2_naive.m[i] != M2_tiled.m[i]) {
+				if constexpr (bIntMatrix) {
+					fprintf(stderr, "i=%zu naive=%d tiled=%d\n", i, M2_naive.m[i], M2_tiled.m[i]);
+				}
+				__debugbreak();
+			}
+		}
+		puts("> Results are same");
+	}
+
+	// ------------------------------------------
+
+	cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!");
+		return 1;
+	}
+
+	puts("cuda destroyed");
 
 	return 0;
 }

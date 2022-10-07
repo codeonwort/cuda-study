@@ -64,6 +64,11 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <Defines>
+      </Defines>
+      <AdditionalCompilerOptions>
+      </AdditionalCompilerOptions>
+      <AdditionalOptions>-std c++17 %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -85,6 +90,11 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <Defines>
+      </Defines>
+      <AdditionalCompilerOptions>
+      </AdditionalCompilerOptions>
+      <AdditionalOptions>-std=c++17 %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
