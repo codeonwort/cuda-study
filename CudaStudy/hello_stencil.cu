@@ -6,11 +6,18 @@
 #include <stdlib.h>
 #include <time.h>
 #include <vector>
+#include <array>
 
-#define INPUT_WIDTH    19
-#define INPUT_HEIGHT   27
-#define INPUT_DEPTH    15
+#define INPUT_WIDTH    17
+#define INPUT_HEIGHT   9
+#define INPUT_DEPTH    4
+#define STENCIL_ORDER  1
+// Order: self, -X, +X, -Y, +Y, -Z, +Z
+#define NUM_COEFFS     (1 + 6 * (STENCIL_ORDER))
 #define BLOCK_DIM      dim3(16, 16, 1)
+
+// Stencil coefficients
+__constant__ int S_device[NUM_COEFFS];
 
 static dim3 calcNumBlocks(const dim3& dimensions, const dim3& blockSize) {
 	auto iceil = [](int x, int y) { return (x % y) ? x / y + 1 : x / y; };
@@ -39,7 +46,7 @@ struct Volume {
 	int width;
 	int height;
 	int depth;
-	std::vector<ElementType> m;
+	std::vector<ElementType> m; // z-major, then y-major
 };
 
 // ------------------------------------------
@@ -47,23 +54,38 @@ struct Volume {
 
 template<typename T>
 __global__ void kernel_stencil_naive(
-	T* src, int rows, int cols, int depth,
+	T* src, int width, int height, int depth,
 	T* dst)
 {
 	int outX = threadIdx.x + (blockDim.x * blockIdx.x);
 	int outY = threadIdx.y + (blockDim.y * blockIdx.y);
 	int outZ = threadIdx.z + (blockDim.z * blockIdx.z);
-	int outIx = (outZ * cols * rows) + (outY * cols) + outX;
-	if (outX > cols || outY > rows || outZ > depth) {
-		return;
-	}
+	int outIx = (outZ * height * width) + (outY * width) + outX;
+
+	// CUDA even supports lambda? cool
+	auto Ix = [&](int x, int y, int z) { return (z * height * width) + (y * width) + x; };
 
 	T ret = T(0);
 
-	// TODO: Stencil here
-	ret = src[outIx];
+	bool bInBound = (STENCIL_ORDER <= outX && outX < width - STENCIL_ORDER)
+		&& (STENCIL_ORDER <= outY && outY < height - STENCIL_ORDER)
+		&& (STENCIL_ORDER <= outZ && outZ < depth - STENCIL_ORDER);
 
-	dst[outIx] = ret;
+	if (bInBound) {
+		ret += S_device[0] * src[outIx];
+		for (int i = 1; i <= STENCIL_ORDER; ++i) {
+			ret += S_device[(0 * STENCIL_ORDER) + i] * src[Ix(outX - i, outY, outZ)];
+			ret += S_device[(1 * STENCIL_ORDER) + i] * src[Ix(outX + i, outY, outZ)];
+			ret += S_device[(2 * STENCIL_ORDER) + i] * src[Ix(outX, outY - i, outZ)];
+			ret += S_device[(3 * STENCIL_ORDER) + i] * src[Ix(outX, outY + i, outZ)];
+			ret += S_device[(4 * STENCIL_ORDER) + i] * src[Ix(outX, outY, outZ - i)];
+			ret += S_device[(5 * STENCIL_ORDER) + i] * src[Ix(outX, outY, outZ + i)];
+		}
+		dst[outIx] = ret;
+	} else if (outX < width && outY < height && outZ < depth) {
+		// On boundary
+		dst[outIx] = src[outIx];
+	}
 }
 
 int runTest_stencil(int argc, char* argv[])
@@ -92,6 +114,7 @@ int runTest_stencil(int argc, char* argv[])
 	Volume<ElementType> M1(INPUT_WIDTH, INPUT_HEIGHT, INPUT_DEPTH);
 	Volume<ElementType> M2_naive(M1.width, M1.height, M1.depth);
 	Volume<ElementType> M2_tiled(M1.width, M1.height, M1.depth);
+	std::array<ElementType, NUM_COEFFS> S;
 
 	// Generate random input
 	printf("Input: %dx%dx%d volume\n", M1.width, M1.height, M1.depth);
@@ -110,6 +133,20 @@ int runTest_stencil(int argc, char* argv[])
 				}
 			}
 		}
+		p = 0;
+		for (int i = 0; i < NUM_COEFFS; ++i) {
+			if constexpr (bIntVolume) {
+				S[p++] = rand() % 5 - 2;
+			}
+			if constexpr (bFloatVolume) {
+				S[p++] = (float)(rand() % 65536) / 65536.0f;
+			}
+		}
+	}
+
+	// Prepare stencil coefficients
+	{
+		CUDA_ASSERT(cudaMemcpyToSymbol(S_device, S.data(), S.size() * sizeof(ElementType)));
 	}
 
 	puts("Run kernel: naive stencil");
@@ -134,10 +171,39 @@ int runTest_stencil(int argc, char* argv[])
 
 	puts("Verify result");
 	{
-		for (size_t i = 0; i < M2_naive.m.size(); ++i) {
-			assert(M1.m[i] == M2_naive.m[i]);
+		if (true && bIntVolume) {
+			puts("> Input");
+			int p = 0;
+			for (int z = 0; z < M1.depth; ++z) {
+				printf("[slice %d]\n", z);
+				for (int y = 0; y < M1.height; ++y) {
+					for (int x = 0; x < M1.width; ++x) {
+						printf("%d\t", M1.m[p++]);
+					}
+					puts("");
+				}
+			}
+			printf("> Coeffs: [");
+			for (int i = 0; i < NUM_COEFFS; ++i) {
+				printf("%d ", S[i]);
+			}
+			printf("]\n");
+			puts("> Output");
+			p = 0;
+			for (int z = 0; z < M1.depth; ++z) {
+				printf("[slice %d]\n", z);
+				for (int y = 0; y < M1.height; ++y) {
+					for (int x = 0; x < M1.width; ++x) {
+						printf("%d\t", M2_naive.m[p++]);
+					}
+					puts("");
+				}
+			}
 		}
-		puts("> Result is correct");
+		//for (size_t i = 0; i < M2_naive.m.size(); ++i) {
+		//	assert(M1.m[i] == M2_naive.m[i]);
+		//}
+		//puts("> Result is correct");
 	}
 
 	// ------------------------------------------
