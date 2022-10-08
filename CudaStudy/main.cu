@@ -14,8 +14,11 @@ int main(int argc, char* argv[]) {
 	//printTestHeader("MATRIX MULTIPLICATION");
 	//runTest_matMul(argc, argv);
 
-	printTestHeader("CONVOLUTION FILTER");
-	runTest_convFilter(argc, argv);
+	//printTestHeader("CONVOLUTION FILTER");
+	//runTest_convFilter(argc, argv);
+
+	printTestHeader("STENCIL");
+	runTest_stencil(argc, argv);
 
 	return 0;
 }
