@@ -2,14 +2,12 @@
 
 #include "tests.cuh"
 
-#include "cuda_runtime.h"
+#include <cuda_runtime.h>
 // For threadIdx, blockIdx, blockDim
-#include "device_launch_parameters.h"
+#include <device_launch_parameters.h>
 
-#include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <vector>
 
 struct Matrix {
@@ -166,20 +164,14 @@ __global__ void kernel_matMul_tiled(
 
 
 int runTest_matMul(int argc, char* argv[]) {
-    cudaError_t cudaStatus;
-
-    puts("hello, matrix");
-
     // ------------------------------------------
     // Query device properties
 
     int cudaDeviceId;
-    cudaStatus = cudaGetDevice(&cudaDeviceId);
-    assert(cudaStatus == cudaError::cudaSuccess);
+    CUDA_ASSERT(cudaGetDevice(&cudaDeviceId));
 
     cudaDeviceProp devProp;
-    cudaStatus = cudaGetDeviceProperties(&devProp, cudaDeviceId);
-    assert(cudaStatus == cudaError::cudaSuccess);
+    CUDA_ASSERT(cudaGetDeviceProperties(&devProp, cudaDeviceId));
 
     puts("CUDA device properties");
     // 49152 bytes = 48 KiB
@@ -231,27 +223,25 @@ int runTest_matMul(int argc, char* argv[]) {
 
         float* M1_device;
         float* M2_device;
-        cudaMalloc(&M1_device, M1.sizeInBytes());
-        cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
-        cudaMalloc(&M2_device, M2.sizeInBytes());
-        cudaMemcpy(M2_device, M2.m.data(), M2.sizeInBytes(), cudaMemcpyHostToDevice);
+        CUDA_ASSERT(cudaMalloc(&M1_device, M1.sizeInBytes()));
+        CUDA_ASSERT(cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice));
+        CUDA_ASSERT(cudaMalloc(&M2_device, M2.sizeInBytes()));
+        CUDA_ASSERT(cudaMemcpy(M2_device, M2.m.data(), M2.sizeInBytes(), cudaMemcpyHostToDevice));
 
         float* M3_device;
-        cudaMalloc(&M3_device, M3.sizeInBytes());
+        CUDA_ASSERT(cudaMalloc(&M3_device, M3.sizeInBytes()));
 
         const dim3 blockSize(16, 16, 1);
-        const int numBlocksX = (M3.cols / blockSize.x) + (M3.cols % blockSize.x == 0 ? 0 : 1);
-        const int numBlocksY = (M3.rows / blockSize.y) + (M3.rows % blockSize.y == 0 ? 0 : 1);
-        const dim3 numBlocks(numBlocksX, numBlocksY, 1);
+        const dim3 numBlocks = calcNumBlocks(dim3(M3.cols, M3.rows, 1), blockSize);
         kernel_matMul_naive<<<numBlocks, blockSize>>>(
             M1_device, M2_device, M3_device,
             M1.rows, M1.cols, M2.cols);
 
-        cudaMemcpy(M3.m.data(), M3_device, M3.sizeInBytes(), cudaMemcpyDeviceToHost);
+        CUDA_ASSERT(cudaMemcpy(M3.m.data(), M3_device, M3.sizeInBytes(), cudaMemcpyDeviceToHost));
 
-        cudaFree(M1_device);
-        cudaFree(M2_device);
-        cudaFree(M3_device);
+        CUDA_ASSERT(cudaFree(M1_device));
+        CUDA_ASSERT(cudaFree(M2_device));
+        CUDA_ASSERT(cudaFree(M3_device));
     }
 
     // Tiled
@@ -261,13 +251,13 @@ int runTest_matMul(int argc, char* argv[]) {
 
         float* M1_device;
         float* M2_device;
-        cudaMalloc(&M1_device, M1.sizeInBytes());
-        cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
-        cudaMalloc(&M2_device, M2.sizeInBytes());
-        cudaMemcpy(M2_device, M2.m.data(), M2.sizeInBytes(), cudaMemcpyHostToDevice);
+        CUDA_ASSERT(cudaMalloc(&M1_device, M1.sizeInBytes()));
+        CUDA_ASSERT(cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice));
+        CUDA_ASSERT(cudaMalloc(&M2_device, M2.sizeInBytes()));
+        CUDA_ASSERT(cudaMemcpy(M2_device, M2.m.data(), M2.sizeInBytes(), cudaMemcpyHostToDevice));
 
         float* M3_device;
-        cudaMalloc(&M3_device, M3.sizeInBytes());
+        CUDA_ASSERT(cudaMalloc(&M3_device, M3.sizeInBytes()));
 
         const dim3 blockSize(TILE_WIDTH, TILE_WIDTH, 1);
         const int numBlocksX = (M3.cols / blockSize.x) + (M3.cols % blockSize.x == 0 ? 0 : 1);
@@ -277,11 +267,11 @@ int runTest_matMul(int argc, char* argv[]) {
             M1_device, M2_device, M3_device,
             M1.rows, M1.cols, M2.cols);
 
-        cudaMemcpy(M3.m.data(), M3_device, M3.sizeInBytes(), cudaMemcpyDeviceToHost);
+        CUDA_ASSERT(cudaMemcpy(M3.m.data(), M3_device, M3.sizeInBytes(), cudaMemcpyDeviceToHost));
 
-        cudaFree(M1_device);
-        cudaFree(M2_device);
-        cudaFree(M3_device);
+        CUDA_ASSERT(cudaFree(M1_device));
+        CUDA_ASSERT(cudaFree(M2_device));
+        CUDA_ASSERT(cudaFree(M3_device));
     }
 
     // ------------------------------------------
@@ -299,11 +289,7 @@ int runTest_matMul(int argc, char* argv[]) {
 
     // ------------------------------------------
 
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
+    CUDA_ASSERT(cudaDeviceReset());
 
     puts("cuda destroyed");
 

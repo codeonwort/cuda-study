@@ -2,14 +2,12 @@
 
 #include "tests.cuh"
 
-#include "cuda_runtime.h"
+#include <cuda_runtime.h>
 // For threadIdx, blockIdx, blockDim
-#include "device_launch_parameters.h"
+#include <device_launch_parameters.h>
 
-#include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <vector>
 
 #define N 100

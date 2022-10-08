@@ -19,14 +19,6 @@
 // Stencil coefficients
 __constant__ int S_device[NUM_COEFFS];
 
-static dim3 calcNumBlocks(const dim3& dimensions, const dim3& blockSize) {
-	auto iceil = [](int x, int y) { return (x % y) ? x / y + 1 : x / y; };
-	int x = iceil(dimensions.x, blockSize.x);
-	int y = iceil(dimensions.y, blockSize.y);
-	int z = iceil(dimensions.z, blockSize.z);
-	return dim3(x, y, z);
-}
-
 template<typename ElementType>
 struct Volume {
 	Volume(int inWidth, int inHeight, int inDepth)
@@ -71,8 +63,13 @@ __global__ void kernel_stencil_naive(
 		&& (STENCIL_ORDER <= outY && outY < height - STENCIL_ORDER)
 		&& (STENCIL_ORDER <= outZ && outZ < depth - STENCIL_ORDER);
 
+	// x : stencil order
+	// Load (1 + 6 * x) input values => (1 + 6 * x) * 4 bytes
+	// Perform (1 + 6 * x) MUL and (6 * x) ADD
+	// => OP/B = (1 + 12x) / (4 + 24x) // 0.46 for x=1
+
 	if (bInBound) {
-		ret += S_device[0] * src[outIx];
+		ret = S_device[0] * src[outIx];
 		for (int i = 1; i <= STENCIL_ORDER; ++i) {
 			ret += S_device[(0 * STENCIL_ORDER) + i] * src[Ix(outX - i, outY, outZ)];
 			ret += S_device[(1 * STENCIL_ORDER) + i] * src[Ix(outX + i, outY, outZ)];

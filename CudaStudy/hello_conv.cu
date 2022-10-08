@@ -1,25 +1,15 @@
 #include "tests.cuh"
 
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 
 #include <time.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <vector>
 
 // Special case: Fixed data for 4x4 (see below)
 #define INPUT_DATA_WIDTH 326
 #define INPUT_DATA_HEIGHT 612
-
-dim3 calcNumBlocks(const dim3& dimensions, const dim3& blockSize) {
-	auto iceil = [](int x, int y) { return (x % y) ? x / y + 1 : x / y; };
-	int x = iceil(dimensions.x, blockSize.x);
-	int y = iceil(dimensions.y, blockSize.y);
-	int z = iceil(dimensions.z, blockSize.z);
-	return dim3(x, y, z);
-}
 
 template<typename ElementType>
 struct Matrix {
@@ -133,24 +123,18 @@ __global__ void kernel_convFilter_tiled(
 
 int runTest_convFilter(int argc, char* argv[])
 {
-	cudaError_t cudaStatus;
-
-	puts("hello, convolution filter");
-
 	// ------------------------------------------
 	// Query device properties
 
 	int cudaDeviceId;
-	cudaStatus = cudaGetDevice(&cudaDeviceId);
-	assert(cudaStatus == cudaError::cudaSuccess);
+	CUDA_ASSERT(cudaGetDevice(&cudaDeviceId));
 
-	cudaDeviceProp devProp;
-	cudaStatus = cudaGetDeviceProperties(&devProp, cudaDeviceId);
-	assert(cudaStatus == cudaError::cudaSuccess);
+	cudaDeviceProp deviceProps;
+	CUDA_ASSERT(cudaGetDeviceProperties(&deviceProps, cudaDeviceId));
 
 	puts("CUDA device properties");
 	// 49152 bytes = 48 KiB
-	printf("\ttotalConstMem: %zu bytes\n", devProp.totalConstMem);
+	printf("\ttotalConstMem: %zu bytes\n", deviceProps.totalConstMem);
 
 	// ------------------------------------------
 	// Kernel: convolution filter
@@ -217,11 +201,7 @@ int runTest_convFilter(int argc, char* argv[])
 
 	// Prepare filter
 	{
-		//ElementType* F_device;
-		//cudaMalloc(&F_device, F.sizeInBytes());
-		//cudaMemcpy(F_device, F.m.data(), F.sizeInBytes(), cudaMemcpyHostToDevice);
-		cudaStatus = cudaMemcpyToSymbol(F_device, F.m.data(), F.sizeInBytes());
-		assert(cudaStatus == cudaError::cudaSuccess);
+		CUDA_ASSERT(cudaMemcpyToSymbol(F_device, F.m.data(), F.sizeInBytes()));
 	}
 
 	puts("Run kernel: naive convolution filter");
@@ -230,10 +210,9 @@ int runTest_convFilter(int argc, char* argv[])
 
 		ElementType* M1_device;
 		ElementType* M2_device;
-		cudaMalloc(&M1_device, M1.sizeInBytes());
-		cudaMalloc(&M2_device, M1.sizeInBytes());
-		cudaStatus = cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
-		assert(cudaStatus == cudaError::cudaSuccess);
+		CUDA_ASSERT(cudaMalloc(&M1_device, M1.sizeInBytes()));
+		CUDA_ASSERT(cudaMalloc(&M2_device, M1.sizeInBytes()));
+		CUDA_ASSERT(cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice));
 
 		const dim3 blockSize(16, 16, 1);
 		const dim3 numBlocks = calcNumBlocks(M1.getDim3(), blockSize);
@@ -242,8 +221,7 @@ int runTest_convFilter(int argc, char* argv[])
 			//F_device, radius,
 			M2_device);
 
-		cudaStatus = cudaMemcpy(M2.m.data(), M2_device, M2.sizeInBytes(), cudaMemcpyDeviceToHost);
-		assert(cudaStatus == cudaError::cudaSuccess);
+		CUDA_ASSERT(cudaMemcpy(M2.m.data(), M2_device, M2.sizeInBytes(), cudaMemcpyDeviceToHost));
 
 		cudaFree(M1_device);
 		cudaFree(M2_device);
@@ -255,10 +233,9 @@ int runTest_convFilter(int argc, char* argv[])
 
 		ElementType* M1_device;
 		ElementType* M2_device;
-		cudaMalloc(&M1_device, M1.sizeInBytes());
-		cudaMalloc(&M2_device, M1.sizeInBytes());
-		cudaStatus = cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice);
-		assert(cudaStatus == cudaError::cudaSuccess);
+		CUDA_ASSERT(cudaMalloc(&M1_device, M1.sizeInBytes()));
+		CUDA_ASSERT(cudaMalloc(&M2_device, M1.sizeInBytes()));
+		CUDA_ASSERT(cudaMemcpy(M1_device, M1.m.data(), M1.sizeInBytes(), cudaMemcpyHostToDevice));
 
 		// CAUTION: Compute num blocks with outBlockSize,
 		//          but actual block size is inBlockSize.
@@ -272,14 +249,16 @@ int runTest_convFilter(int argc, char* argv[])
 			M1_device, M1.cols, M1.rows,
 			M2_device);
 
-		cudaStatus = cudaMemcpy(M2.m.data(), M2_device, M2.sizeInBytes(), cudaMemcpyDeviceToHost);
-		assert(cudaStatus == cudaError::cudaSuccess);
+		CUDA_ASSERT(cudaMemcpy(M2.m.data(), M2_device, M2.sizeInBytes(), cudaMemcpyDeviceToHost));
 
-		cudaFree(M1_device);
-		cudaFree(M2_device);
+		CUDA_ASSERT(cudaFree(M1_device));
+		CUDA_ASSERT(cudaFree(M2_device));
 	}
 
-	cudaFree(F_device);
+	// NOTE: Constant memory is allocated by CUDA driver
+	// and deallocated when CUDA module is unloaded.
+	// Do not manually free constant memory.
+	//CUDA_ASSERT(cudaFree(F_device)); // no error but illegal
 
 	puts("Compare results...");
 	{
@@ -296,11 +275,7 @@ int runTest_convFilter(int argc, char* argv[])
 
 	// ------------------------------------------
 
-	cudaStatus = cudaDeviceReset();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceReset failed!");
-		return 1;
-	}
+	CUDA_ASSERT(cudaDeviceReset());
 
 	puts("cuda destroyed");
 

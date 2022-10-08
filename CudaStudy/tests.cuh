@@ -19,3 +19,11 @@ inline void CUDA_ASSERT(cudaError_t err) {
 			cudaGetErrorString(err));
 	}
 }
+
+inline dim3 calcNumBlocks(const dim3& dimensions, const dim3& blockSize) {
+	auto iceil = [](int x, int y) { return (x % y) ? x / y + 1 : x / y; };
+	int x = iceil(dimensions.x, blockSize.x);
+	int y = iceil(dimensions.y, blockSize.y);
+	int z = iceil(dimensions.z, blockSize.z);
+	return dim3(x, y, z);
+}
