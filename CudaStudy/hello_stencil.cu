@@ -1,3 +1,6 @@
+// Chapter 8. Stencil
+// #todo: Thread coarsening, register tiling
+
 #include "tests.cuh"
 
 #include <cuda_runtime.h>

@@ -9,6 +9,7 @@ extern int runTest_vecAdd(int argc, char* argv[]);
 extern int runTest_matMul(int argc, char* argv[]);
 extern int runTest_convFilter(int argc, char* argv[]);
 extern int runTest_stencil(int argc, char* argv[]);
+extern int runTest_histogram(int argc, char* argv[]);
 
 inline void CUDA_ASSERT(cudaError_t err) {
 	

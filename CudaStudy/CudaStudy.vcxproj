@@ -99,6 +99,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="hello_conv.cu" />
+    <CudaCompile Include="hello_histogram.cu" />
     <CudaCompile Include="hello_matrix.cu" />
     <CudaCompile Include="hello_stencil.cu" />
     <CudaCompile Include="hello_world.cu" />
