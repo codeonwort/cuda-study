@@ -4,12 +4,20 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include <array>
+#include <vector>
+#include <algorithm>
 
 extern int runTest_vecAdd(int argc, char* argv[]);
 extern int runTest_matMul(int argc, char* argv[]);
 extern int runTest_convFilter(int argc, char* argv[]);
 extern int runTest_stencil(int argc, char* argv[]);
 extern int runTest_histogram(int argc, char* argv[]);
+extern int runTest_reduction(int argc, char* argv[]);
 
 inline void CUDA_ASSERT(cudaError_t err) {
 	

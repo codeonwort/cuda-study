@@ -20,8 +20,11 @@ int main(int argc, char* argv[]) {
 	//printTestHeader("STENCIL");
 	//runTest_stencil(argc, argv);
 
-	printTestHeader("HISTOGRAM");
-	runTest_histogram(argc, argv);
+	//printTestHeader("HISTOGRAM");
+	//runTest_histogram(argc, argv);
+
+	printTestHeader("REDUCTION");
+	runTest_reduction(argc, argv);
 
 	return 0;
 }
