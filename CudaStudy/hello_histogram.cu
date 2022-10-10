@@ -149,7 +149,7 @@ __global__ void kernel_histogram_aggregate(
 	}
 }
 
-int runTest_histogram(int argc, char** argv)
+int runTest_histogram(int argc, char* argv[])
 {
 	// ------------------------------------------
 	// Query device properties
