@@ -18,9 +18,7 @@
 __global__ void kernel_scan_Kogge_Stone(
 	CONTENT_TYPE* src, uint32_t totalCount,
 	uint32_t* blockCounter, CONTENT_TYPE* scanBlock,
-	// TODO: Instead of flag array I can use single flag
-	//       and compare its value with 'bid'. Will it hurt memory traffic?
-	uint32_t* syncFlags,
+	uint32_t* syncFlag,
 	CONTENT_TYPE* dst)
 {
 	__shared__ uint32_t bid_s;
@@ -69,13 +67,13 @@ __global__ void kernel_scan_Kogge_Stone(
 	__shared__ float prevSum;
 	if (threadIdx.x == 0) {
 		if (bid != 0) {
-			while (atomicAdd(&syncFlags[bid], 0) == 0) {}
+			while (atomicAdd(syncFlag, 0) < bid) {}
 			prevSum = scanBlock[bid - 1];
 			scanBlock[bid] = prevSum + localSum;
 			// Memory fence (ensures memory write is visible from other blocks)
 			__threadfence();
 		}
-		atomicAdd(&syncFlags[bid + 1], 1);
+		atomicAdd(syncFlag, 1);
 	}
 	__syncthreads();
 
@@ -188,20 +186,19 @@ int runTest_scan(int argc, char* argv[])
 	// For Kogge-Stone
 	const uint32_t scanBlockCount = calcNumBlocks(CONTENT_COUNT, BLOCK_DIM).x;
 	const size_t scanBlockTotalBytes = sizeof(CONTENT_TYPE) * scanBlockCount;
-	const size_t syncFlagsTotalBytes = sizeof(uint32_t) * scanBlockCount;
 	CONTENT_TYPE* content_dev;
 	uint32_t* blockCounter_dev;
 	CONTENT_TYPE* scanBlock_dev;
-	uint32_t* syncFlags_dev;
+	uint32_t* syncFlag_dev;
 	CONTENT_TYPE* result_dev;
 	CUDA_ASSERT(cudaMalloc(&content_dev, contentTotalBytes));
 	CUDA_ASSERT(cudaMalloc(&blockCounter_dev, sizeof(uint32_t)));
 	CUDA_ASSERT(cudaMalloc(&scanBlock_dev, scanBlockTotalBytes));
-	CUDA_ASSERT(cudaMalloc(&syncFlags_dev, syncFlagsTotalBytes));
+	CUDA_ASSERT(cudaMalloc(&syncFlag_dev, sizeof(uint32_t)));
 	CUDA_ASSERT(cudaMalloc(&result_dev, contentTotalBytes));
 	CUDA_ASSERT(cudaMemcpy(content_dev, input.data(), contentTotalBytes, cudaMemcpyHostToDevice));
 	CUDA_ASSERT(cudaMemset(blockCounter_dev, 0, sizeof(uint32_t)));
-	CUDA_ASSERT(cudaMemset(syncFlags_dev, 0, syncFlagsTotalBytes));
+	CUDA_ASSERT(cudaMemset(syncFlag_dev, 0, sizeof(uint32_t)));
 
 	// For Brent-Kung
 #if BRENT_KUNG_LONG_INPUT
@@ -220,7 +217,7 @@ int runTest_scan(int argc, char* argv[])
 
 	kernel_scan_Kogge_Stone<<<numBlocks, blockDim>>>(
 		content_dev, CONTENT_COUNT,
-		blockCounter_dev, scanBlock_dev, syncFlags_dev,
+		blockCounter_dev, scanBlock_dev, syncFlag_dev,
 		result_dev);
 
 #if BRENT_KUNG_LONG_INPUT
