@@ -23,6 +23,7 @@ __global__ void kernel_scan_Kogge_Stone(
 {
 	__shared__ uint32_t bid_s;
 	__shared__ CONTENT_TYPE XY[BLOCK_DIM];
+	__shared__ CONTENT_TYPE XY2[BLOCK_DIM];
 
 	// Dynamic block index assignment
 	if (threadIdx.x == 0) {
@@ -41,8 +42,27 @@ __global__ void kernel_scan_Kogge_Stone(
 		XY[tid] = CONTENT_TYPE(0);
 	}
 
+	bool writeToXY2 = true;
 	for (uint32_t stride = 1; stride < BLOCK_DIM; stride *= 2) {
 		__syncthreads();
+
+#if 1
+		// Double buffering
+		if (writeToXY2) {
+			if (tid >= stride) {
+				XY2[tid] = XY[tid] + XY[tid - stride];
+			} else {
+				XY2[tid] = XY[tid];
+			}
+		} else {
+			if (tid >= stride) {
+				XY[tid] = XY2[tid] + XY2[tid - stride];
+			} else {
+				XY[tid] = XY2[tid];
+			}
+		}
+		writeToXY2 = !writeToXY2;
+#else
 		CONTENT_TYPE temp;
 		if (tid >= stride) {
 			temp = XY[tid] + XY[tid - stride];
@@ -51,14 +71,16 @@ __global__ void kernel_scan_Kogge_Stone(
 		if (tid >= stride) {
 			XY[tid] = temp;
 		}
+#endif
 	}
 	__syncthreads();
 	__shared__ float localSum;
 	if (threadIdx.x == blockDim.x - 1) {
-		if (ix < totalCount) {
-			localSum = XY[BLOCK_DIM - 1];
+		int32_t lastIx = (BLOCK_DIM - 1) - max(0, (int32_t)ix - (int32_t)totalCount);
+		if (writeToXY2) {
+			localSum = XY[lastIx];
 		} else {
-			localSum = XY[BLOCK_DIM - 1 - (ix - totalCount)];
+			localSum = XY2[lastIx];
 		}
 		scanBlock[bid] = localSum;
 	}
@@ -79,7 +101,7 @@ __global__ void kernel_scan_Kogge_Stone(
 
 	// Phase 3. Add prevSum to all elements in current block to produce final result
 	if (ix < totalCount) {
-		dst[ix] = XY[tid] + prevSum;
+		dst[ix] = (writeToXY2 ? XY[tid] : XY2[tid]) + prevSum;
 	}
 }
 
