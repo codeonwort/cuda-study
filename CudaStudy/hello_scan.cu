@@ -43,6 +43,55 @@ __global__ void kernel_scan_Kogge_Stone(
 	}
 }
 
+#define SECTION_SIZE  2048
+__global__ void kernel_scan_Brent_Kung(
+	CONTENT_TYPE* src, uint32_t totalCount,
+	CONTENT_TYPE* dst)
+{
+	__shared__ CONTENT_TYPE XY[SECTION_SIZE];
+
+	uint32_t ix = (2 * blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t tid = threadIdx.x;
+	if (ix < totalCount) {
+		XY[tid] = src[ix];
+	}
+	if (ix + blockDim.x < totalCount) {
+		XY[tid + blockDim.x] = src[ix + blockDim.x];
+	}
+
+	// Reduction tree phase
+	for (uint32_t stride = 1; stride < blockDim.x; stride *= 2) {
+		__syncthreads();
+#if 1
+		// Map a continuous section of threads to the XY positions
+		// whose indices are of the form k*2^n - 1
+		uint32_t p = (tid + 1) * 2 * stride - 1;
+		if (p < SECTION_SIZE) {
+			XY[p] += XY[p - stride];
+		}
+#else
+		// Causes significant control divergence
+		if ((tid + 1) % (2 * stride) == 0) {
+			XY[tid] += XY[tid - stride];
+		}
+#endif
+	}
+	// Reverse tree phase
+	for (uint32_t stride = SECTION_SIZE / 4; stride > 0; stride /= 2) {
+		__syncthreads();
+		uint32_t p = (tid + 1) * stride * 2 - 1;
+		if (p + stride < SECTION_SIZE) {
+			XY[p + stride] += XY[p];
+		}
+	}
+	__syncthreads();
+	if (ix < totalCount) {
+		dst[ix] = XY[tid];
+	}
+	if (ix + blockDim.x < totalCount) {
+		dst[ix + blockDim.x] = XY[tid + blockDim.x];
+	}
+}
 
 int runTest_scan(int argc, char* argv[])
 {
@@ -93,10 +142,15 @@ int runTest_scan(int argc, char* argv[])
 	const size_t contentTotalBytes = sizeof(CONTENT_TYPE) * CONTENT_COUNT;
 
 	CONTENT_TYPE* content_dev;
+	CONTENT_TYPE* content2_dev;
 	CONTENT_TYPE* result_dev;
+	CONTENT_TYPE* result2_dev;
 	CUDA_ASSERT(cudaMalloc(&content_dev, contentTotalBytes));
+	CUDA_ASSERT(cudaMalloc(&content2_dev, contentTotalBytes));
 	CUDA_ASSERT(cudaMalloc(&result_dev, contentTotalBytes));
+	CUDA_ASSERT(cudaMalloc(&result2_dev, contentTotalBytes));
 	CUDA_ASSERT(cudaMemcpy(content_dev, input.data(), contentTotalBytes, cudaMemcpyHostToDevice));
+	CUDA_ASSERT(cudaMemcpy(content2_dev, input.data(), contentTotalBytes, cudaMemcpyHostToDevice));
 
 	// ------------------------------------------
 	// Kernel: Prefix sum (scan)
@@ -107,23 +161,43 @@ int runTest_scan(int argc, char* argv[])
 		content_dev, CONTENT_COUNT,
 		result_dev);
 
+	const dim3 numBlocks2 = calcNumBlocks(dim3(CONTENT_COUNT / 2, 1, 1), BLOCK_DIM);
+	kernel_scan_Brent_Kung<<<numBlocks2, blockDim>>>(
+		content2_dev, CONTENT_COUNT,
+		result2_dev);
+
 	// ------------------------------------------
 	// Device -> host
 
 	std::vector<CONTENT_TYPE> result(CONTENT_COUNT);
+	std::vector<CONTENT_TYPE> result2(CONTENT_COUNT);
 	CUDA_ASSERT(cudaMemcpy(result.data(), result_dev, contentTotalBytes, cudaMemcpyDeviceToHost));
+	CUDA_ASSERT(cudaMemcpy(result2.data(), result2_dev, contentTotalBytes, cudaMemcpyDeviceToHost));
 
 	puts("Compare results...");
 	{
+		constexpr uint32_t NUM_SHOW = 8;
+		printf("input: [");
+		for (size_t i = 0; i < result.size(); ++i) {
+			if (i < NUM_SHOW) {
+				printf("%d ", input[i]);
+			} else if (i == NUM_SHOW) {
+				printf("...]\n");
+			}
+		}
+		printf("scan : [");
 		for (size_t i = 0; i < result.size(); ++i) {
 			CONTENT_TYPE dx = std::abs(answer[i] - result[i]);
-			if (i < 5 || i > result.size() - 5) {
-				printf("%zu-th: diff(%d, %d) = %d\n", i, answer[i], result[i], dx);
-			} else if (i == 5) {
-				puts("...");
-			}
+			CONTENT_TYPE dx2 = std::abs(answer[i] - result2[i]);
 			assert(dx == 0);
+			assert(dx2 == 0);
+			if (i < NUM_SHOW) {
+				printf("%d ", answer[i]);
+			} else if (i == NUM_SHOW) {
+				printf("...");
+			}
 		}
+		puts("]");
 	}
 
 	return 0;
