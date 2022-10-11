@@ -7,19 +7,35 @@
 
 #include <random>
 
+// TODO: Implement Brent-Kung for long input
+#define BRENT_KUNG_LONG_INPUT 0
+
 #define CONTENT_TYPE  int32_t
-// TODO: Only works if CONTENT_COUNT <= BLOCK_DIM
-#define CONTENT_COUNT 1000
+#define CONTENT_COUNT (3840 * 2160)
 #define BLOCK_DIM     1024
 
 // TODO: Double buffering
 __global__ void kernel_scan_Kogge_Stone(
 	CONTENT_TYPE* src, uint32_t totalCount,
+	uint32_t* blockCounter, CONTENT_TYPE* scanBlock,
+	// TODO: Instead of flag array I can use single flag
+	//       and compare its value with 'bid'. Will it hurt memory traffic?
+	uint32_t* syncFlags,
 	CONTENT_TYPE* dst)
 {
+	__shared__ uint32_t bid_s;
 	__shared__ CONTENT_TYPE XY[BLOCK_DIM];
 
-	uint32_t ix = (blockIdx.x * blockDim.x) + threadIdx.x;
+	// Dynamic block index assignment
+	if (threadIdx.x == 0) {
+		bid_s = atomicAdd(blockCounter, 1);
+	}
+	__syncthreads();
+	uint32_t bid = bid_s; // Now use bid instead of blockIdx.x
+
+	// Phase 1. Local scan per block, then store to 'scanBlock'
+
+	uint32_t ix = (bid * BLOCK_DIM) + threadIdx.x;
 	uint32_t tid = threadIdx.x;
 	if (ix < totalCount) {
 		XY[tid] = src[ix];
@@ -27,7 +43,7 @@ __global__ void kernel_scan_Kogge_Stone(
 		XY[tid] = CONTENT_TYPE(0);
 	}
 
-	for (uint32_t stride = 1; stride < blockDim.x; stride *= 2) {
+	for (uint32_t stride = 1; stride < BLOCK_DIM; stride *= 2) {
 		__syncthreads();
 		CONTENT_TYPE temp;
 		if (tid >= stride) {
@@ -38,11 +54,38 @@ __global__ void kernel_scan_Kogge_Stone(
 			XY[tid] = temp;
 		}
 	}
+	__syncthreads();
+	__shared__ float localSum;
+	if (threadIdx.x == blockDim.x - 1) {
+		if (ix < totalCount) {
+			localSum = XY[BLOCK_DIM - 1];
+		} else {
+			localSum = XY[BLOCK_DIM - 1 - (ix - totalCount)];
+		}
+		scanBlock[bid] = localSum;
+	}
+
+	// Phase 2. Domino-style scan with synchronization across blocks
+	__shared__ float prevSum;
+	if (threadIdx.x == 0) {
+		if (bid != 0) {
+			while (atomicAdd(&syncFlags[bid], 0) == 0) {}
+			prevSum = scanBlock[bid - 1];
+			scanBlock[bid] = prevSum + localSum;
+			// Memory fence (ensures memory write is visible from other blocks)
+			__threadfence();
+		}
+		atomicAdd(&syncFlags[bid + 1], 1);
+	}
+	__syncthreads();
+
+	// Phase 3. Add prevSum to all elements in current block to produce final result
 	if (ix < totalCount) {
-		dst[ix] = XY[tid];
+		dst[ix] = XY[tid] + prevSum;
 	}
 }
 
+#if BRENT_KUNG_LONG_INPUT
 #define SECTION_SIZE  2048
 __global__ void kernel_scan_Brent_Kung(
 	CONTENT_TYPE* src, uint32_t totalCount,
@@ -92,6 +135,7 @@ __global__ void kernel_scan_Brent_Kung(
 		dst[ix + blockDim.x] = XY[tid + blockDim.x];
 	}
 }
+#endif // BRENT_KUNG_LONG_INPUT
 
 int runTest_scan(int argc, char* argv[])
 {
@@ -107,8 +151,8 @@ int runTest_scan(int argc, char* argv[])
 	const float KHZ_TO_GHZ = 0.001f * 0.001f;
 
 	puts("CUDA device properties");
-	// CUDA gives you all these info!?
 	printf("\ttotalConstMem      : %zu bytes\n", deviceProps.totalConstMem);
+	// 49152 bytes = 12288 floats or (u)int32
 	printf("\tsharedMemPerBlock  : %zu bytes\n", deviceProps.sharedMemPerBlock);
 	printf("\twarpSize           : %d\n", deviceProps.warpSize);
 	printf("\tclockRate          : %f GHz\n", KHZ_TO_GHZ * (float)deviceProps.clockRate);
@@ -141,38 +185,64 @@ int runTest_scan(int argc, char* argv[])
 
 	const size_t contentTotalBytes = sizeof(CONTENT_TYPE) * CONTENT_COUNT;
 
+	// For Kogge-Stone
+	const uint32_t scanBlockCount = calcNumBlocks(CONTENT_COUNT, BLOCK_DIM).x;
+	const size_t scanBlockTotalBytes = sizeof(CONTENT_TYPE) * scanBlockCount;
+	const size_t syncFlagsTotalBytes = sizeof(uint32_t) * scanBlockCount;
 	CONTENT_TYPE* content_dev;
-	CONTENT_TYPE* content2_dev;
+	uint32_t* blockCounter_dev;
+	CONTENT_TYPE* scanBlock_dev;
+	uint32_t* syncFlags_dev;
 	CONTENT_TYPE* result_dev;
-	CONTENT_TYPE* result2_dev;
 	CUDA_ASSERT(cudaMalloc(&content_dev, contentTotalBytes));
-	CUDA_ASSERT(cudaMalloc(&content2_dev, contentTotalBytes));
+	CUDA_ASSERT(cudaMalloc(&blockCounter_dev, sizeof(uint32_t)));
+	CUDA_ASSERT(cudaMalloc(&scanBlock_dev, scanBlockTotalBytes));
+	CUDA_ASSERT(cudaMalloc(&syncFlags_dev, syncFlagsTotalBytes));
 	CUDA_ASSERT(cudaMalloc(&result_dev, contentTotalBytes));
-	CUDA_ASSERT(cudaMalloc(&result2_dev, contentTotalBytes));
 	CUDA_ASSERT(cudaMemcpy(content_dev, input.data(), contentTotalBytes, cudaMemcpyHostToDevice));
+	CUDA_ASSERT(cudaMemset(blockCounter_dev, 0, sizeof(uint32_t)));
+	CUDA_ASSERT(cudaMemset(syncFlags_dev, 0, syncFlagsTotalBytes));
+
+	// For Brent-Kung
+#if BRENT_KUNG_LONG_INPUT
+	CONTENT_TYPE* content2_dev;
+	CONTENT_TYPE* result2_dev;
+	CUDA_ASSERT(cudaMalloc(&content2_dev, contentTotalBytes));
+	CUDA_ASSERT(cudaMalloc(&result2_dev, contentTotalBytes));
 	CUDA_ASSERT(cudaMemcpy(content2_dev, input.data(), contentTotalBytes, cudaMemcpyHostToDevice));
+#endif
 
 	// ------------------------------------------
 	// Kernel: Prefix sum (scan)
 
 	const dim3 blockDim(BLOCK_DIM, 1, 1);
-	const dim3 numBlocks = calcNumBlocks(dim3(CONTENT_COUNT, 1, 1), BLOCK_DIM);
+	const dim3 numBlocks = calcNumBlocks(dim3(CONTENT_COUNT, 1, 1), dim3(BLOCK_DIM, 1, 1));
+
 	kernel_scan_Kogge_Stone<<<numBlocks, blockDim>>>(
 		content_dev, CONTENT_COUNT,
+		blockCounter_dev, scanBlock_dev, syncFlags_dev,
 		result_dev);
 
+#if BRENT_KUNG_LONG_INPUT
 	const dim3 numBlocks2 = calcNumBlocks(dim3(CONTENT_COUNT / 2, 1, 1), BLOCK_DIM);
 	kernel_scan_Brent_Kung<<<numBlocks2, blockDim>>>(
 		content2_dev, CONTENT_COUNT,
 		result2_dev);
+#endif
 
 	// ------------------------------------------
 	// Device -> host
 
+	// Result of Kogge-Stone
 	std::vector<CONTENT_TYPE> result(CONTENT_COUNT);
-	std::vector<CONTENT_TYPE> result2(CONTENT_COUNT);
+	//std::vector<CONTENT_TYPE> scanBlock(numBlocks.x);
 	CUDA_ASSERT(cudaMemcpy(result.data(), result_dev, contentTotalBytes, cudaMemcpyDeviceToHost));
+	//CUDA_ASSERT(cudaMemcpy(scanBlock.data(), scanBlock_dev, scanBlockTotalBytes, cudaMemcpyDeviceToHost));
+
+#if BRENT_KUNG_LONG_INPUT
+	std::vector<CONTENT_TYPE> result2(CONTENT_COUNT);
 	CUDA_ASSERT(cudaMemcpy(result2.data(), result2_dev, contentTotalBytes, cudaMemcpyDeviceToHost));
+#endif
 
 	puts("Compare results...");
 	{
@@ -188,9 +258,13 @@ int runTest_scan(int argc, char* argv[])
 		printf("scan : [");
 		for (size_t i = 0; i < result.size(); ++i) {
 			CONTENT_TYPE dx = std::abs(answer[i] - result[i]);
-			CONTENT_TYPE dx2 = std::abs(answer[i] - result2[i]);
 			assert(dx == 0);
+
+#if BRENT_KUNG_LONG_INPUT
+			CONTENT_TYPE dx2 = std::abs(answer[i] - result2[i]);
 			assert(dx2 == 0);
+#endif
+
 			if (i < NUM_SHOW) {
 				printf("%d ", answer[i]);
 			} else if (i == NUM_SHOW) {
