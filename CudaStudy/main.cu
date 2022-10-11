@@ -23,8 +23,11 @@ int main(int argc, char* argv[]) {
 	//printTestHeader("HISTOGRAM");
 	//runTest_histogram(argc, argv);
 
-	printTestHeader("REDUCTION");
-	runTest_reduction(argc, argv);
+	//printTestHeader("REDUCTION");
+	//runTest_reduction(argc, argv);
+
+	printTestHeader("PREFIX SUM (SCAN)");
+	runTest_scan(argc, argv);
 
 	return 0;
 }

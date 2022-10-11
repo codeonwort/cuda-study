@@ -102,6 +102,7 @@
     <CudaCompile Include="hello_histogram.cu" />
     <CudaCompile Include="hello_matrix.cu" />
     <CudaCompile Include="hello_reduction.cu" />
+    <CudaCompile Include="hello_scan.cu" />
     <CudaCompile Include="hello_stencil.cu" />
     <CudaCompile Include="hello_world.cu" />
     <CudaCompile Include="kernel.cu" />
