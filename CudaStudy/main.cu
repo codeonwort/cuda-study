@@ -26,8 +26,11 @@ int main(int argc, char* argv[]) {
 	//printTestHeader("REDUCTION");
 	//runTest_reduction(argc, argv);
 
-	printTestHeader("PREFIX SUM (SCAN)");
-	runTest_scan(argc, argv);
+	//printTestHeader("PREFIX SUM (SCAN)");
+	//runTest_scan(argc, argv);
+
+	printTestHeader("MERGE");
+	runTest_merge(argc, argv);
 
 	return 0;
 }
