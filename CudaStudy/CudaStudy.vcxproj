@@ -105,7 +105,7 @@
     <CudaCompile Include="hello_reduction.cu" />
     <CudaCompile Include="hello_scan.cu" />
     <CudaCompile Include="hello_stencil.cu" />
-    <CudaCompile Include="hello_world.cu" />
+    <CudaCompile Include="hello_add.cu" />
     <CudaCompile Include="kernel.cu" />
     <CudaCompile Include="main.cu" />
   </ItemGroup>
