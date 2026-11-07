@@ -6,8 +6,10 @@
 #include <device_launch_parameters.h>
 
 #define CONTENT_TYPE  int32_t
-#define INPUT_A_COUNT (1024 * 1024 + 75)
-#define INPUT_B_COUNT (1024 * 1024 + 287)
+//#define INPUT_A_COUNT (1024 * 1024 + 0 * 75)
+//#define INPUT_B_COUNT (1024 * 1024 + 0 * 287)
+#define INPUT_A_COUNT (1024)
+#define INPUT_B_COUNT (1024)
 
 __device__ void merge_sequential(
 	CONTENT_TYPE* A, size_t lenA,
@@ -70,6 +72,7 @@ __global__ void kernel_merge_naive(
 	CONTENT_TYPE* C)
 {
 	uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+	// But it means elemPerThread is always 1 or 2?
 	uint32_t elemPerThread = ceilf((float)(lenA + lenB) / (float)(blockDim.x * gridDim.x));
 	int32_t k_curr = tid * elemPerThread; // start output index
 	if (k_curr >= lenA + lenB) {
@@ -89,6 +92,81 @@ __global__ void kernel_merge_naive(
 		C + k_curr);
 }
 
+#define TILE_SIZE 1024
+__global__ void kernel_merge_tiled(
+	CONTENT_TYPE* A, size_t lenA,
+	CONTENT_TYPE* B, size_t lenB,
+	CONTENT_TYPE* C)
+{
+	// Find the whole range that current block covers
+	__shared__ CONTENT_TYPE shareAB[TILE_SIZE * 2];
+	CONTENT_TYPE* A_S = &shareAB[0];
+	CONTENT_TYPE* B_S = &shareAB[TILE_SIZE];
+	int32_t C_curr = blockIdx.x * ceilf((float)(lenA + lenB) / gridDim.x);
+	int32_t C_next = (blockIdx.x + 1) * ceilf((float)(lenA + lenB) / gridDim.x);
+	if (C_next >= lenA + lenB) {
+		C_next = lenA + lenB;
+	}
+	if (threadIdx.x == 0) {
+		A_S[0] = co_rank(C_curr, A, lenA, B, lenB);
+		A_S[1] = co_rank(C_next, A, lenA, B, lenB);
+	}
+	__syncthreads();
+
+	int32_t A_curr = A_S[0];
+	int32_t A_next = A_S[1];
+	int32_t B_curr = C_curr - A_curr;
+	int32_t B_next = C_next - A_next;
+	__syncthreads();
+
+	int32_t counter = 0;
+	int32_t C_length = C_next - C_curr;
+	int32_t A_length = A_next - A_curr;
+	int32_t B_length = B_next - B_curr;
+	int32_t totalIteration = ceilf((float)C_length / (float)TILE_SIZE);
+	int32_t C_completed = 0;
+	int32_t A_consumed = 0;
+	int32_t B_consumed = 0;
+	while (counter < totalIteration) {
+		for (int32_t i = 0; i < TILE_SIZE; i += blockDim.x) {
+			if (i + threadIdx.x < A_length - A_consumed) {
+				A_S[i + threadIdx.x] = A[A_curr + A_consumed + i + threadIdx.x];
+			}
+		}
+		for (int32_t i = 0; i < TILE_SIZE; i += blockDim.x) {
+			if (i + threadIdx.x < B_length - B_consumed) {
+				B_S[i + threadIdx.x] = B[B_curr + B_consumed + i + threadIdx.x];
+			}
+		}
+		__syncthreads();
+
+		int32_t c_curr = threadIdx.x * (TILE_SIZE / blockDim.x);
+		int32_t c_next = (threadIdx.x + 1) * (TILE_SIZE / blockDim.x);
+		c_curr = (c_curr <= C_length - C_completed) ? c_curr : (C_length - C_completed);
+		c_next = (c_next <= C_length - C_completed) ? c_next : (C_length - C_completed);
+		int32_t a_curr = co_rank(
+			c_curr,
+			A_S, min(TILE_SIZE, A_length - A_consumed),
+			B_S, min(TILE_SIZE, B_length - B_consumed));
+		int32_t b_curr = c_curr - a_curr;
+		int32_t a_next = co_rank(
+			c_next,
+			A_S, min(TILE_SIZE, A_length - A_consumed),
+			B_S, min(TILE_SIZE, B_length - B_consumed));
+		int32_t b_next = c_next - a_next;
+
+		merge_sequential(
+			A_S + a_curr, a_next - a_curr,
+			B_S + b_curr, b_next - b_curr,
+			C + C_curr + C_completed + c_curr);
+		counter++;
+		C_completed += TILE_SIZE;
+		A_consumed += co_rank(TILE_SIZE, A_S, TILE_SIZE, B_S, TILE_SIZE);
+		B_consumed += C_completed - A_consumed;
+		__syncthreads();
+	}
+}
+
 int runTest_merge(int argc, char* argv[])
 {
 	// ------------------------------------------
@@ -100,6 +178,10 @@ int runTest_merge(int argc, char* argv[])
 	cudaDeviceProp deviceProps;
 	CUDA_ASSERT(cudaGetDeviceProperties(&deviceProps, cudaDeviceId));
 
+	int clockRateKHz, memoryClockRateKHz;
+	cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, cudaDeviceId);
+	cudaDeviceGetAttribute(&memoryClockRateKHz, cudaDevAttrMemoryClockRate, cudaDeviceId);
+
 	const float KHZ_TO_GHZ = 0.001f * 0.001f;
 
 	puts("CUDA device properties");
@@ -107,9 +189,9 @@ int runTest_merge(int argc, char* argv[])
 	// 49152 bytes = 12288 floats or (u)int32
 	printf("\tsharedMemPerBlock  : %zu bytes\n", deviceProps.sharedMemPerBlock);
 	printf("\twarpSize           : %d\n", deviceProps.warpSize);
-	printf("\tclockRate          : %f GHz\n", KHZ_TO_GHZ * (float)deviceProps.clockRate);
+	printf("\tclockRate          : %f GHz\n", KHZ_TO_GHZ * (float)clockRateKHz);
 	printf("\tmemoryBusWidth     : %d bits\n", deviceProps.memoryBusWidth);
-	printf("\tmemoryClockRate    : %f GHz\n", KHZ_TO_GHZ * deviceProps.memoryClockRate);
+	printf("\tmemoryClockRate    : %f GHz\n", KHZ_TO_GHZ * (float)memoryClockRateKHz);
 	printf("\tmaxThreadsPerBlock : %d\n", deviceProps.maxThreadsPerBlock);
 
 	// ------------------------------------------
@@ -159,9 +241,11 @@ int runTest_merge(int argc, char* argv[])
 	CONTENT_TYPE* inputA_dev;
 	CONTENT_TYPE* inputB_dev;
 	CONTENT_TYPE* result_dev;
+	CONTENT_TYPE* result2_dev;
 	CUDA_ASSERT(cudaMalloc(&inputA_dev, inputA_totalBytes));
 	CUDA_ASSERT(cudaMalloc(&inputB_dev, inputB_totalBytes));
 	CUDA_ASSERT(cudaMalloc(&result_dev, result_totalBytes));
+	CUDA_ASSERT(cudaMalloc(&result2_dev, result_totalBytes));
 	CUDA_ASSERT(cudaMemcpy(inputA_dev, inputA.data(), inputA_totalBytes, cudaMemcpyHostToDevice));
 	CUDA_ASSERT(cudaMemcpy(inputB_dev, inputB.data(), inputB_totalBytes, cudaMemcpyHostToDevice));
 
@@ -170,10 +254,16 @@ int runTest_merge(int argc, char* argv[])
 		const dim3 blockSize(deviceProps.maxThreadsPerBlock, 1, 1);
 		const dim3 totalSize(INPUT_A_COUNT + INPUT_B_COUNT, 1, 1);
 		const dim3 numBlocks = calcNumBlocks(totalSize, blockSize);
+
 		kernel_merge_naive<<<numBlocks, blockSize>>>(
 			inputA_dev, INPUT_A_COUNT,
 			inputB_dev, INPUT_B_COUNT,
 			result_dev);
+
+		kernel_merge_tiled<<<numBlocks, blockSize>>>(
+			inputA_dev, INPUT_A_COUNT,
+			inputB_dev, INPUT_B_COUNT,
+			result2_dev);
 	}
 
 	// ------------------------------------------
@@ -182,9 +272,13 @@ int runTest_merge(int argc, char* argv[])
 	std::vector<CONTENT_TYPE> result(INPUT_A_COUNT + INPUT_B_COUNT);
 	CUDA_ASSERT(cudaMemcpy(result.data(), result_dev, result_totalBytes, cudaMemcpyDeviceToHost));
 
+	std::vector<CONTENT_TYPE> result2(INPUT_A_COUNT + INPUT_B_COUNT);
+	CUDA_ASSERT(cudaMemcpy(result2.data(), result2_dev, result_totalBytes, cudaMemcpyDeviceToHost));
+
 	puts("Compare results...");
 	for (size_t i = 0; i < result.size(); ++i) {
 		assert(answer[i] == result[i]);
+		assert(answer[i] == result2[i]);
 	}
 
 	return 0;

@@ -168,6 +168,10 @@ int runTest_scan(int argc, char* argv[])
 	cudaDeviceProp deviceProps;
 	CUDA_ASSERT(cudaGetDeviceProperties(&deviceProps, cudaDeviceId));
 
+	int clockRateKHz, memoryClockRateKHz;
+	cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, cudaDeviceId);
+	cudaDeviceGetAttribute(&memoryClockRateKHz, cudaDevAttrMemoryClockRate, cudaDeviceId);
+
 	const float KHZ_TO_GHZ = 0.001f * 0.001f;
 
 	puts("CUDA device properties");
@@ -175,9 +179,9 @@ int runTest_scan(int argc, char* argv[])
 	// 49152 bytes = 12288 floats or (u)int32
 	printf("\tsharedMemPerBlock  : %zu bytes\n", deviceProps.sharedMemPerBlock);
 	printf("\twarpSize           : %d\n", deviceProps.warpSize);
-	printf("\tclockRate          : %f GHz\n", KHZ_TO_GHZ * (float)deviceProps.clockRate);
+	printf("\tclockRate          : %f GHz\n", KHZ_TO_GHZ * (float)clockRateKHz);
 	printf("\tmemoryBusWidth     : %d bits\n", deviceProps.memoryBusWidth);
-	printf("\tmemoryClockRate    : %f GHz\n", KHZ_TO_GHZ * deviceProps.memoryClockRate);
+	printf("\tmemoryClockRate    : %f GHz\n", KHZ_TO_GHZ * (float)memoryClockRateKHz);
 	printf("\tmaxThreadsPerBlock : %d\n", deviceProps.maxThreadsPerBlock);
 
 	assert(deviceProps.maxThreadsPerBlock >= BLOCK_DIM);

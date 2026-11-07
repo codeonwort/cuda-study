@@ -1,36 +1,60 @@
 #include "tests.cuh"
 #include <stdio.h>
 
+using TestFn = int (*)(int argc, char* argv[]);
+
+struct TestCase {
+	const char* name;
+	TestFn pfn;
+};
+TestCase testCases[] = {
+	{ "VECTOR ADD", runTest_vecAdd },
+	{ "MATRIX MULTIPLICATION", runTest_matMul },
+	{ "CONVOLUTION FILTER", runTest_convFilter },
+	{ "STENCIL", runTest_stencil },
+	{ "HISTOGRAM", runTest_histogram },
+	{ "REDUCTION", runTest_reduction },
+	{ "PREFIX SUM (SCAN)", runTest_scan },
+	//{ "MERGE", runTest_merge }, // TODO: Finish merge kernel
+};
+int kNumCases = _countof(testCases);
+
 void printTestHeader(const char* header) {
 	puts("");
-	printf("=== TEST: %s ===\n", header);
+	printf_s("=== TEST: %s ===\n", header);
 	puts("");
 }
 
 int main(int argc, char* argv[]) {
-	//printTestHeader("VECTOR ADD");
-	//runTest_vecAdd(argc, argv);
+	int number = -1;
+	if (argc >= 2)
+	{
+		scanf_s("%d", &number);
+	}
+	else
+	{
+		for (int i = 0; i < kNumCases; ++i)
+		{
+			printf_s("%d - %s\n", i, testCases[i].name);
+		}
+	}
 
-	//printTestHeader("MATRIX MULTIPLICATION");
-	//runTest_matMul(argc, argv);
+	if (number == -1)
+	{
+		printf_s("Enter test number: ");
+		scanf_s("%d", &number);
+	}
 
-	//printTestHeader("CONVOLUTION FILTER");
-	//runTest_convFilter(argc, argv);
-
-	//printTestHeader("STENCIL");
-	//runTest_stencil(argc, argv);
-
-	//printTestHeader("HISTOGRAM");
-	//runTest_histogram(argc, argv);
-
-	//printTestHeader("REDUCTION");
-	//runTest_reduction(argc, argv);
-
-	//printTestHeader("PREFIX SUM (SCAN)");
-	//runTest_scan(argc, argv);
-
-	printTestHeader("MERGE");
-	runTest_merge(argc, argv);
+	if (0 <= number && number < kNumCases)
+	{
+		printTestHeader(testCases[number].name);
+		testCases[number].pfn(argc, argv);
+	}
+	else
+	{
+		printf_s("Invalid test number: %d", number);
+		return 1;
+	}
 
 	return 0;
 }
